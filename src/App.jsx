@@ -228,21 +228,42 @@ function LoginScreen({onLogin}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 function OutletScreen({outlet, onLogout, notify}) {
   const [orders, setOrders] = useState(()=>{try{return JSON.parse(localStorage.getItem(ORDERS_KEY))||[]}catch{return []}});
-  const [items, setItems] = useState([{id:1, name:"", cat:"Wagyu", qty:"", unit:"pack"}]);
-  const [note, setNote] = useState("");
+  const [stock]             = useState(()=>{try{return JSON.parse(localStorage.getItem(STOCK_KEY))||DEFAULT_STOCK}catch{return DEFAULT_STOCK}});
+  const [note, setNote]     = useState("");
   const [submitted, setSubmitted] = useState(false);
 
-  const addItem = () => setItems(p=>[...p,{id:Date.now(),name:"",cat:"Wagyu",qty:"",unit:"pack"}]);
-  const removeItem = id => setItems(p=>p.filter(i=>i.id!==id));
-  const updateItem = (id,field,val) => setItems(p=>p.map(i=>i.id===id?{...i,[field]:val}:i));
+  const availableCats = CATS.filter(c => stock.some(s => s.cat === c));
+  const defaultCat    = availableCats[0] || CATS[0];
+  const defaultItem   = stock.find(s => s.cat === defaultCat);
+
+  const [items, setItems] = useState([{id:1, cat:defaultCat, name:defaultItem?.name||"", qty:"", unit:defaultItem?.unit||""}]);
+
+  const itemsForCat = cat => stock.filter(s => s.cat === cat);
+
+  const addItem = () => {
+    const first = stock.find(s => s.cat === defaultCat);
+    setItems(p => [...p, {id:Date.now(), cat:defaultCat, name:first?.name||"", qty:"", unit:first?.unit||""}]);
+  };
+
+  const removeItem = id => setItems(p => p.filter(i => i.id !== id));
+
+  const updateCat = (id, cat) => {
+    const first = stock.find(s => s.cat === cat);
+    setItems(p => p.map(i => i.id === id ? {...i, cat, name:first?.name||"", unit:first?.unit||""} : i));
+  };
+
+  const updateName = (id, name) => {
+    const si = stock.find(s => s.name === name);
+    setItems(p => p.map(i => i.id === id ? {...i, name, unit:si?.unit||i.unit} : i));
+  };
 
   const submit = () => {
-    const valid = items.filter(i=>i.name.trim()&&i.qty);
-    if (!valid.length) return notify("Please add at least one item with a name and quantity.","err");
+    const valid = items.filter(i => i.name.trim() && i.qty);
+    if (!valid.length) return notify("Please select at least one item and enter a quantity.", "err");
     const order = {
-      id: Date.now(), title:`${outlet} — ${new Date().toLocaleDateString("en-GB")}`,
+      id:Date.now(), title:`${outlet} — ${new Date().toLocaleDateString("en-GB")}`,
       outlet, note, source:"outlet", createdAt:today(), status:"Pending",
-      items: valid.map(i=>({...i,id:Date.now()+Math.random(),delivered:false,photo:null}))
+      items: valid.map(i => ({...i, id:Date.now()+Math.random(), delivered:false, photo:null}))
     };
     const updated = [order, ...orders];
     setOrders(updated);
@@ -256,50 +277,102 @@ function OutletScreen({outlet, onLogout, notify}) {
       <div style={{textAlign:"center",maxWidth:340}}>
         <div style={{fontSize:56,marginBottom:16}}>✅</div>
         <div style={{...T.h1,fontSize:22,marginBottom:8}}>Order Submitted!</div>
-        <div style={{...T.body,color:C.sub,marginBottom:32}}>Your order from <strong>{outlet}</strong> has been sent to Central Kitchen. They will process it shortly.</div>
-        <Btn onClick={()=>{setSubmitted(false);setItems([{id:1,name:"",cat:"Wagyu",qty:"",unit:"pack"}]);setNote("")}}>Submit Another Order</Btn>
+        <div style={{...T.body,color:C.sub,marginBottom:8}}>Your order from <strong>{outlet}</strong> has been sent to Central Kitchen.</div>
+        <div style={{...T.caption,marginBottom:32}}>They will process it shortly.</div>
+        <Btn onClick={()=>{
+          const fi = stock.find(s => s.cat === defaultCat);
+          setItems([{id:1, cat:defaultCat, name:fi?.name||"", qty:"", unit:fi?.unit||""}]);
+          setNote(""); setSubmitted(false);
+        }}>Submit Another Order</Btn>
       </div>
     </div>
   );
 
   return (
     <div style={{minHeight:"100vh",background:C.surface,fontFamily:"'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"}}>
-      <div style={{background:C.bg,borderBottom:`1px solid ${C.border}`,padding:"16px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+      <div style={{background:C.bg,borderBottom:`1px solid ${C.border}`,padding:"16px 24px",
+        display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div>
           <div style={{...T.h3}}>Weekly Order Request</div>
           <div style={{...T.caption,marginTop:2}}>🏪 {outlet}</div>
         </div>
-        <button onClick={onLogout} style={{background:"none",border:"none",color:C.accent,cursor:"pointer",fontSize:14,fontWeight:500,fontFamily:"inherit"}}>Sign Out</button>
+        <button onClick={onLogout} style={{background:"none",border:"none",color:C.accent,
+          cursor:"pointer",fontSize:14,fontWeight:500,fontFamily:"inherit"}}>Sign Out</button>
       </div>
 
       <div style={{maxWidth:560,margin:"0 auto",padding:"24px 16px"}}>
         <Card style={{padding:24,marginBottom:16}}>
-          <div style={{...T.h3,marginBottom:16}}>Items to Order</div>
-          <div style={{display:"flex",flexDirection:"column",gap:12}}>
-            {items.map((item,idx)=>(
-              <div key={item.id} style={{background:C.surface,borderRadius:12,padding:14}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                  <div style={{...T.label}}>Item {idx+1}</div>
-                  {items.length>1&&<button onClick={()=>removeItem(item.id)} style={{background:"none",border:"none",color:C.danger,cursor:"pointer",fontSize:18,padding:0}}>×</button>}
+          <div style={{...T.h3,marginBottom:4}}>Items to Order</div>
+          <div style={{...T.caption,marginBottom:16}}>Select a category, then choose the item.</div>
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            {items.map((item, idx) => {
+              const catItems = itemsForCat(item.cat);
+              return (
+                <div key={item.id} style={{background:C.surface,borderRadius:12,padding:14}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <div style={{...T.label}}>Item {idx+1}</div>
+                    {items.length > 1 && (
+                      <button onClick={()=>removeItem(item.id)} style={{background:"none",border:"none",
+                        color:C.danger,cursor:"pointer",fontSize:20,padding:0,lineHeight:1}}>×</button>
+                    )}
+                  </div>
+
+                  {/* Category pills */}
+                  <div style={{...T.label,marginBottom:8}}>Category</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+                    {availableCats.map(c => (
+                      <button key={c} onClick={()=>updateCat(item.id, c)} style={{
+                        padding:"6px 14px",borderRadius:99,border:"none",cursor:"pointer",
+                        fontSize:13,fontWeight:500,fontFamily:"inherit",transition:"all .15s",
+                        background: item.cat===c ? C.accent : C.bg,
+                        color: item.cat===c ? "#fff" : C.sub,
+                      }}>{c}</button>
+                    ))}
+                  </div>
+
+                  {/* Item dropdown */}
+                  <div style={{...T.label,marginBottom:6}}>Item</div>
+                  <select value={item.name} onChange={e=>updateName(item.id, e.target.value)}
+                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,
+                      borderRadius:10,padding:"10px 14px",color:item.name?C.text:C.sub,
+                      fontSize:14,outline:"none",fontFamily:"inherit",marginBottom:10}}>
+                    <option value="" disabled>Select an item...</option>
+                    {catItems.map(s => (
+                      <option key={s.id} value={s.name}>{s.name}</option>
+                    ))}
+                  </select>
+
+                  {/* Qty + unit */}
+                  <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:8}}>
+                    <div>
+                      <div style={{...T.label,marginBottom:6}}>Quantity</div>
+                      <input type="number" min="1" value={item.qty}
+                        onChange={e=>setItems(p=>p.map(i=>i.id===item.id?{...i,qty:e.target.value}:i))}
+                        placeholder="e.g. 10"
+                        style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,
+                          borderRadius:10,padding:"10px 14px",color:C.text,fontSize:14,
+                          outline:"none",fontFamily:"inherit"}}/>
+                    </div>
+                    <div>
+                      <div style={{...T.label,marginBottom:6}}>Unit</div>
+                      <input value={item.unit} readOnly
+                        style={{width:"100%",background:C.surface,border:`1px solid ${C.border}`,
+                          borderRadius:10,padding:"10px 14px",color:C.sub,fontSize:14,
+                          outline:"none",fontFamily:"inherit"}}/>
+                    </div>
+                  </div>
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-                  <Inp value={item.name} onChange={e=>updateItem(item.id,"name",e.target.value)} placeholder="Item name"/>
-                  <Sel value={item.cat} options={CATS} onChange={e=>updateItem(item.id,"cat",e.target.value)}/>
-                </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                  <Inp type="number" min="0" value={item.qty} onChange={e=>updateItem(item.id,"qty",e.target.value)} placeholder="Quantity"/>
-                  <Inp value={item.unit} onChange={e=>updateItem(item.id,"unit",e.target.value)} placeholder="pack / kg / ctn"/>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
-          <button onClick={addItem} style={{width:"100%",marginTop:12,padding:"10px",background:"none",
+          <button onClick={addItem} style={{width:"100%",marginTop:12,padding:"11px",background:"none",
             border:`1.5px dashed ${C.border}`,borderRadius:10,color:C.accent,fontWeight:600,
             cursor:"pointer",fontSize:14,fontFamily:"inherit"}}>+ Add Another Item</button>
         </Card>
 
         <Card style={{padding:24,marginBottom:24}}>
-          <Inp label="Notes (Optional)" value={note} onChange={e=>setNote(e.target.value)} placeholder="Any special instructions or notes..."/>
+          <Inp label="Notes (Optional)" value={note} onChange={e=>setNote(e.target.value)}
+            placeholder="Any special instructions or notes..."/>
         </Card>
 
         <Btn onClick={submit} full color={C.accent}>Submit Order</Btn>
@@ -307,7 +380,6 @@ function OutletScreen({outlet, onLogout, notify}) {
     </div>
   );
 }
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN APP (Admin / Viewer)
 // ═══════════════════════════════════════════════════════════════════════════════

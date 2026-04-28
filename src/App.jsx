@@ -697,24 +697,49 @@ function StockTab({stock, setStock, orders, pendingMap, notify, isAdmin}) {
 // ORDERS TAB
 // ═══════════════════════════════════════════════════════════════════════════════
 function OrdersTab({orders, setOrders, notify, isAdmin}) {
-  const [filter, setFilter]   = useState("All");
-  const [modal,  setModal]    = useState(null);
-  const [sel,    setSel]      = useState(null);
-  const [newOrder,setNewOrder]= useState({title:"",outlet:OUTLETS[0],note:"",items:[]});
-  const [newItem, setNewItem] = useState({name:"",cat:"Wagyu",unit:"pack",qty:""});
+  const [filter,     setFilter]    = useState("All");
+  const [timeFilter, setTimeFilter]= useState("All Time");
+  const [modal,      setModal]     = useState(null);
+  const [sel,        setSel]       = useState(null);
+  const [deliveredQtys, setDeliveredQtys] = useState({});
+  const [newOrder,   setNewOrder]  = useState({title:"",outlet:OUTLETS[0],note:"",items:[]});
+  const [newItem,    setNewItem]   = useState({name:"",cat:"Wagyu",unit:"pack",qty:""});
 
   const statusColor = s => s==="Completed"?"#34c759":s==="Partial"?"#ff9500":"#5856d6";
   const statusBg    = s => s==="Completed"?"#34c75912":s==="Partial"?"#ff950012":"#5856d612";
 
-  const filtered = orders.filter(o=>filter==="All"||o.status===filter);
+  // Time filter logic
+  const now = new Date();
+  const isInPeriod = (dateStr, period) => {
+    if (period === "All Time") return true;
+    const d = new Date(dateStr);
+    if (period === "Today") {
+      return d.toDateString() === now.toDateString();
+    }
+    if (period === "This Week") {
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay());
+      startOfWeek.setHours(0,0,0,0);
+      return d >= startOfWeek;
+    }
+    if (period === "This Month") {
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    }
+    return true;
+  };
+
+  const filtered = orders.filter(o =>
+    (filter === "All" || o.status === filter) &&
+    (filter !== "Completed" || isInPeriod(o.createdAt, timeFilter))
+  );
 
   const createOrder = () => {
-    if (!newOrder.title.trim()) return notify("Order title is required.","err");
-    if (!newOrder.items.length) return notify("Add at least one item.","err");
+    if (!newOrder.title.trim()) return notify("Order title is required.", "err");
+    if (!newOrder.items.length) return notify("Add at least one item.", "err");
     setOrders(prev=>[{
       id:Date.now(), title:newOrder.title, outlet:newOrder.outlet, note:newOrder.note,
       source:"manual", createdAt:today(), status:"Pending",
-      items:newOrder.items.map(i=>({...i,id:Date.now()+Math.random(),delivered:false,photo:null}))
+      items:newOrder.items.map(i=>({...i,id:Date.now()+Math.random(),delivered:false,deliveredQty:0,photo:null}))
     },...prev]);
     notify("Order created.");
     setModal(null);
@@ -727,20 +752,44 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
     setNewItem({name:"",cat:"Wagyu",unit:"pack",qty:""});
   };
 
-  const toggleDelivered = (orderId, itemId, photo=null) => {
+  // Mark all items delivered with their keyed quantities
+  const markAllDelivered = (orderId) => {
     setOrders(prev=>prev.map(o=>{
-      if (o.id!==orderId) return o;
-      const items = o.items.map(i=>i.id===itemId?{...i,delivered:!i.delivered,photo:photo||i.photo}:i);
-      const done  = items.filter(i=>i.delivered).length;
-      return {...o, items, status:done===0?"Pending":done===items.length?"Completed":"Partial"};
+      if (o.id !== orderId) return o;
+      const items = o.items.map(i => {
+        const dQty = parseFloat(deliveredQtys[`${orderId}-${i.id}`] ?? i.qty) || 0;
+        return {...i, delivered:true, deliveredQty:dQty, photo:i.photo||null};
+      });
+      const allFull  = items.every(i => i.deliveredQty >= i.qty);
+      return {...o, items, status: allFull ? "Completed" : "Partial", completedAt: today()};
     }));
+    notify("Order marked as delivered.");
+  };
+
+  const unmarkDelivered = (orderId) => {
+    setOrders(prev=>prev.map(o=>{
+      if (o.id !== orderId) return o;
+      const items = o.items.map(i => ({...i, delivered:false, deliveredQty:0}));
+      return {...o, items, status:"Pending", completedAt:null};
+    }));
+    notify("Order reset to Pending.", "warn");
   };
 
   const handleDeliveryPhoto = (e, orderId, itemId) => {
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
-    r.onload = ev => { toggleDelivered(orderId, itemId, ev.target.result); notify("Proof photo saved."); };
+    r.onload = ev => {
+      setOrders(prev=>prev.map(o=>{
+        if (o.id!==orderId) return o;
+        return {...o, items:o.items.map(i=>i.id===itemId?{...i,photo:ev.target.result}:i)};
+      }));
+      notify("Proof photo saved.");
+    };
     r.readAsDataURL(f);
+  };
+
+  const setDQty = (orderId, itemId, val) => {
+    setDeliveredQtys(p=>({...p,[`${orderId}-${itemId}`]:val}));
   };
 
   useEffect(()=>{
@@ -749,11 +798,11 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
 
   return (
     <div style={{animation:"fadeUp .25s ease"}}>
-
       {/* Stats */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:12,marginBottom:24}}>
         {[{l:"Total",v:orders.length,c:C.text},{l:"Pending",v:orders.filter(o=>o.status==="Pending").length,c:C.purple},
-          {l:"Partial",v:orders.filter(o=>o.status==="Partial").length,c:C.warning},{l:"Completed",v:orders.filter(o=>o.status==="Completed").length,c:C.success}].map(s=>(
+          {l:"Partial",v:orders.filter(o=>o.status==="Partial").length,c:C.warning},
+          {l:"Completed",v:orders.filter(o=>o.status==="Completed").length,c:C.success}].map(s=>(
           <Card key={s.l} style={{padding:"16px 18px"}}>
             <div style={{...T.caption,marginBottom:6}}>{s.l}</div>
             <div style={{fontSize:26,fontWeight:700,color:s.c}}>{s.v}</div>
@@ -761,38 +810,59 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
         ))}
       </div>
 
+      {/* Filters */}
       <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:20,alignItems:"center"}}>
         <div style={{display:"flex",gap:8,flex:1,flexWrap:"wrap"}}>
           {["All","Pending","Partial","Completed"].map(s=>(
-            <Pill key={s} label={s} active={filter===s} color={s==="Completed"?C.success:s==="Partial"?C.warning:C.purple} onClick={()=>setFilter(s)}/>
+            <Pill key={s} label={s} active={filter===s}
+              color={s==="Completed"?C.success:s==="Partial"?C.warning:C.purple}
+              onClick={()=>setFilter(s)}/>
           ))}
         </div>
         {isAdmin&&<Btn onClick={()=>{setNewOrder({title:`Order ${new Date().toLocaleDateString("en-GB")}`,outlet:OUTLETS[0],note:"",items:[]});setModal("new")}}>+ New Order</Btn>}
       </div>
 
+      {/* Time filter — only show when viewing Completed */}
+      {filter==="Completed"&&(
+        <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
+          <span style={{...T.caption,marginRight:4}}>Show:</span>
+          {["Today","This Week","This Month","All Time"].map(t=>(
+            <button key={t} onClick={()=>setTimeFilter(t)} style={{
+              padding:"5px 14px",borderRadius:99,border:`1px solid ${timeFilter===t?C.accent:C.border}`,
+              background:timeFilter===t?`${C.accent}12`:"transparent",
+              color:timeFilter===t?C.accent:C.sub,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"
+            }}>{t}</button>
+          ))}
+        </div>
+      )}
+
+      {/* Order list */}
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {filtered.length===0&&(
           <Card style={{padding:60,textAlign:"center"}}>
             <div style={{fontSize:36,marginBottom:12}}>📋</div>
-            <div style={{color:C.sub}}>No orders yet. Outlets can submit via Google Form.</div>
+            <div style={{color:C.sub}}>No orders found.</div>
           </Card>
         )}
         {filtered.map(order=>{
-          const done = order.items.filter(i=>i.delivered).length;
-          const pct  = order.items.length ? Math.round(done/order.items.length*100) : 0;
+          const done    = order.items.filter(i=>i.delivered).length;
+          const pct     = order.items.length ? Math.round(done/order.items.length*100) : 0;
+          const hasShort= order.items.some(i=>i.delivered && i.deliveredQty < i.qty);
           return(
             <Card key={order.id} style={{padding:"16px 20px"}}>
               <div style={{display:"flex",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
                 <div style={{flex:1}}>
-                  <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
                     <div style={{...T.h3}}>{order.title}</div>
                     <span style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:99,
                       background:statusBg(order.status),color:statusColor(order.status),textTransform:"uppercase",letterSpacing:.6}}>
                       {order.status}</span>
-                    {order.source==="gsheet"&&<span style={{fontSize:11,padding:"3px 10px",borderRadius:99,background:"#34c75912",color:C.success,fontWeight:600}}>Google Form</span>}
-                    {order.source==="outlet"&&<span style={{fontSize:11,padding:"3px 10px",borderRadius:99,background:"#5856d612",color:C.purple,fontWeight:600}}>Outlet Submitted</span>}
+                    {hasShort&&<span style={{fontSize:11,padding:"3px 10px",borderRadius:99,
+                      background:`${C.warning}18`,color:C.warning,fontWeight:600}}>⚠ Short Delivered</span>}
+                    {order.source==="outlet"&&<span style={{fontSize:11,padding:"3px 10px",borderRadius:99,background:`${C.purple}12`,color:C.purple,fontWeight:600}}>Outlet</span>}
+                    {order.source==="gsheet"&&<span style={{fontSize:11,padding:"3px 10px",borderRadius:99,background:`${C.success}12`,color:C.success,fontWeight:600}}>Google Form</span>}
                   </div>
-                  {order.outlet&&<div style={{...T.caption,marginBottom:4}}>🏪 {order.outlet}</div>}
+                  {order.outlet&&<div style={{...T.caption,marginBottom:2}}>🏪 {order.outlet}</div>}
                   <div style={{...T.caption}}>{fmtDate(order.createdAt)} · {done}/{order.items.length} items delivered</div>
                   <div style={{marginTop:10,background:C.surface,borderRadius:99,height:4,overflow:"hidden"}}>
                     <div style={{width:pct+"%",height:"100%",background:pct===100?C.success:C.accent,borderRadius:99,transition:"width .4s"}}/>
@@ -810,7 +880,7 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
         })}
       </div>
 
-      {/* NEW ORDER */}
+      {/* NEW ORDER MODAL */}
       {modal==="new"&&(
         <Modal onClose={()=>setModal(null)} width={540}>
           <div style={{...T.h2,marginBottom:20}}>New Order</div>
@@ -852,53 +922,112 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
         </Modal>
       )}
 
-      {/* VIEW ORDER */}
-      {modal==="view"&&sel&&(
-        <Modal onClose={()=>setModal(null)} width={560}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6,flexWrap:"wrap",gap:8}}>
-            <div style={{...T.h2}}>{sel.title}</div>
-            <span style={{fontSize:11,fontWeight:600,padding:"4px 12px",borderRadius:99,
-              background:statusBg(sel.status),color:statusColor(sel.status),textTransform:"uppercase",letterSpacing:.6}}>{sel.status}</span>
-          </div>
-          {sel.outlet&&<div style={{...T.caption,marginBottom:4}}>🏪 {sel.outlet}</div>}
-          <div style={{...T.caption,marginBottom:16}}>Created {fmtDate(sel.createdAt)}</div>
-          {sel.note&&<div style={{fontSize:13,color:C.sub,marginBottom:16,background:C.surface,borderRadius:10,padding:"10px 14px"}}>{sel.note}</div>}
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {sel.items.map(item=>(
-              <div key={item.id} style={{background:item.delivered?`${C.success}0f`:C.surface,
-                border:`1px solid ${item.delivered?C.success+"30":C.border}`,borderRadius:12,padding:"12px 14px"}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-                  <div>
-                    <div style={{fontWeight:600,fontSize:14,textDecoration:item.delivered?"line-through":"none",
-                      color:item.delivered?C.sub:C.text}}>{item.name}</div>
-                    <div style={{...T.caption}}>{item.cat} · {item.qty} {item.unit}</div>
-                  </div>
-                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                    {item.photo&&<img src={item.photo} alt="" style={{width:36,height:36,borderRadius:6,objectFit:"cover",cursor:"pointer"}} onClick={()=>window.open(item.photo,"_blank")}/>}
-                    {isAdmin&&(
-                      <label style={{padding:"7px 12px",borderRadius:8,border:"1px solid",cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap",fontFamily:"inherit",
-                        borderColor:item.delivered?`${C.danger}40`:`${C.success}40`,
-                        background:item.delivered?`${C.danger}10`:`${C.success}10`,
-                        color:item.delivered?C.danger:C.success}}>
-                        {item.delivered?"✓ Delivered":"Mark Delivered"}
-                        <input type="file" accept="image/*" style={{display:"none"}}
-                          onChange={e=>handleDeliveryPhoto(e,sel.id,item.id)}
-                          onClick={e=>{if(item.delivered){e.preventDefault();toggleDelivered(sel.id,item.id)}}}/>
-                      </label>
+      {/* VIEW ORDER MODAL */}
+      {modal==="view"&&sel&&(()=>{
+        const isDelivered = sel.status==="Completed"||sel.status==="Partial";
+        return (
+          <Modal onClose={()=>setModal(null)} width={580}>
+            {/* Header */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6,flexWrap:"wrap",gap:8}}>
+              <div style={{...T.h2}}>{sel.title}</div>
+              <span style={{fontSize:11,fontWeight:600,padding:"4px 12px",borderRadius:99,
+                background:statusBg(sel.status),color:statusColor(sel.status),textTransform:"uppercase",letterSpacing:.6}}>{sel.status}</span>
+            </div>
+            {sel.outlet&&<div style={{...T.caption,marginBottom:4}}>🏪 {sel.outlet}</div>}
+            <div style={{...T.caption,marginBottom:sel.note?8:16}}>Created {fmtDate(sel.createdAt)}</div>
+            {sel.note&&<div style={{fontSize:13,color:C.sub,marginBottom:16,background:C.surface,borderRadius:10,padding:"10px 14px"}}>{sel.note}</div>}
+
+            {/* Column labels */}
+            <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:8,padding:"0 4px",marginBottom:8}}>
+              <div style={{...T.label}}>Item</div>
+              <div style={{...T.label,textAlign:"center"}}>Ordered</div>
+              <div style={{...T.label,textAlign:"center"}}>Delivered</div>
+            </div>
+
+            {/* Items */}
+            <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
+              {sel.items.map(item=>{
+                const dQtyKey  = `${sel.id}-${item.id}`;
+                const dQtyVal  = deliveredQtys[dQtyKey] ?? (item.deliveredQty||"");
+                const ordered  = parseFloat(item.qty)||0;
+                const delivered= parseFloat(item.deliveredQty)||0;
+                const isShort  = item.delivered && delivered < ordered;
+                const isFull   = item.delivered && delivered >= ordered;
+                return (
+                  <div key={item.id} style={{
+                    background: isFull?`${C.success}08`:isShort?`${C.warning}08`:C.surface,
+                    border:`1px solid ${isFull?C.success+"30":isShort?C.warning+"40":C.border}`,
+                    borderRadius:12,padding:"12px 14px"
+                  }}>
+                    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:8,alignItems:"center"}}>
+                      <div>
+                        <div style={{fontWeight:600,fontSize:14,color:C.text}}>{item.name}</div>
+                        <div style={{...T.caption}}>{item.cat}</div>
+                        {isShort&&<div style={{fontSize:11,color:C.warning,fontWeight:600,marginTop:2}}>⚠ Short by {ordered-delivered} {item.unit}</div>}
+                        {isFull&&<div style={{fontSize:11,color:C.success,fontWeight:600,marginTop:2}}>✓ Fully delivered</div>}
+                      </div>
+                      <div style={{textAlign:"center"}}>
+                        <span style={{fontWeight:700,fontSize:16}}>{item.qty}</span>
+                        <span style={{...T.caption,marginLeft:3}}>{item.unit}</span>
+                      </div>
+                      <div style={{textAlign:"center"}}>
+                        {isAdmin&&!isDelivered ? (
+                          <input type="number" min="0" max={item.qty} value={dQtyVal}
+                            onChange={e=>setDQty(sel.id,item.id,e.target.value)}
+                            placeholder={String(item.qty)}
+                            style={{width:"100%",textAlign:"center",background:C.bg,border:`1px solid ${C.border}`,
+                              borderRadius:8,padding:"7px 8px",fontSize:14,fontWeight:600,
+                              color:C.text,outline:"none",fontFamily:"inherit"}}/>
+                        ):(
+                          <div>
+                            <span style={{fontWeight:700,fontSize:16,color:isFull?C.success:isShort?C.warning:C.sub}}>
+                              {item.delivered?item.deliveredQty:"—"}
+                            </span>
+                            {item.delivered&&<span style={{...T.caption,marginLeft:3}}>{item.unit}</span>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {/* Photo */}
+                    {isAdmin&&item.delivered&&(
+                      <div style={{marginTop:10,display:"flex",alignItems:"center",gap:10}}>
+                        {item.photo
+                          ?<img src={item.photo} alt="" style={{width:40,height:40,borderRadius:6,objectFit:"cover",cursor:"pointer"}} onClick={()=>window.open(item.photo,"_blank")}/>
+                          :<label style={{fontSize:12,color:C.sub,cursor:"pointer",fontFamily:"inherit",
+                            border:`1px dashed ${C.border}`,borderRadius:6,padding:"4px 10px"}}>
+                            📸 Add proof
+                            <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>handleDeliveryPhoto(e,sel.id,item.id)}/>
+                          </label>
+                        }
+                      </div>
                     )}
-                    {!isAdmin&&item.delivered&&<span style={{fontSize:12,color:C.success,fontWeight:600}}>✓ Delivered</span>}
                   </div>
-                </div>
+                );
+              })}
+            </div>
+
+            {/* Action buttons */}
+            {isAdmin&&(
+              <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16,display:"flex",gap:10,flexWrap:"wrap"}}>
+                {!isDelivered?(
+                  <Btn onClick={()=>markAllDelivered(sel.id)} style={{flex:1}}>
+                    ✓ Mark All as Delivered
+                  </Btn>
+                ):(
+                  <Btn onClick={()=>unmarkDelivered(sel.id)} variant="outline" color={C.warning} style={{flex:1}}>
+                    ↩ Reset to Pending
+                  </Btn>
+                )}
+                <Btn onClick={()=>setModal(null)} variant="outline" style={{flex:1}}>Close</Btn>
               </div>
-            ))}
-          </div>
-          <div style={{marginTop:20,textAlign:"right"}}><Btn onClick={()=>setModal(null)} variant="outline">Close</Btn></div>
-        </Modal>
-      )}
+            )}
+            {!isAdmin&&<div style={{textAlign:"right",marginTop:16}}><Btn onClick={()=>setModal(null)} variant="outline">Close</Btn></div>}
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // SETUP TAB
 // ═══════════════════════════════════════════════════════════════════════════════

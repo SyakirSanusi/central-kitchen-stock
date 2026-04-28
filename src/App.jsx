@@ -13,7 +13,7 @@ const today = () => new Date().toISOString().split("T")[0];
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}) : "—";
 
 const CATS    = ["Wagyu","Beverages","SKU CK","Gas","Others"];
-const OUTLETS = ["SYP","SYSJ","Outlet 3","Outlet 4","Outlet 5","Outlet 6","Outlet 7","Outlet 8","Outlet 9","Outlet 10"];
+const OUTLETS = ["Samurai Neo","Samurai Ryoiki","Samurai Evo","Samurai Hattori (KLTS)","AAH Samurai","Samurai Sora","Samurai Puchong","Samurai Bayan Baru","Samurai Seberang Jaya","Konoha Buffet KB","Samurai Hattori (Bachok)"];
 
 const DEFAULT_STOCK = [
   {id:1, name:"Chuck Roll",         cat:"Wagyu",     unit:"pack", qty:142, minQty:20, lastUpdate:"2026-04-10", photo:null},

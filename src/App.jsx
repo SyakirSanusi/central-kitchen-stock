@@ -775,15 +775,12 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
     notify("Order reset to Pending.", "warn");
   };
 
-  const handleDeliveryPhoto = (e, orderId, itemId) => {
+  const uploadOrderPhoto = (e, orderId, field) => {
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
     r.onload = ev => {
-      setOrders(prev=>prev.map(o=>{
-        if (o.id!==orderId) return o;
-        return {...o, items:o.items.map(i=>i.id===itemId?{...i,photo:ev.target.result}:i)};
-      }));
-      notify("Proof photo saved.");
+      setOrders(prev=>prev.map(o=>o.id!==orderId?o:{...o,[field]:ev.target.result}));
+      notify(field==="deliveryPhoto"?"Delivery photo saved.":"Receipt saved.");
     };
     r.readAsDataURL(f);
   };
@@ -925,20 +922,59 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
       {/* VIEW ORDER MODAL */}
       {modal==="view"&&sel&&(()=>{
         const isDelivered = sel.status==="Completed"||sel.status==="Partial";
+        const PhotoSlot = ({field, label, icon}) => {
+          const photo = sel[field];
+          return (
+            <div style={{flex:1}}>
+              <div style={{...T.label,marginBottom:8}}>{icon} {label}</div>
+              {photo ? (
+                <div style={{position:"relative"}}>
+                  <img src={photo} alt={label}
+                    style={{width:"100%",height:120,objectFit:"cover",borderRadius:10,cursor:"pointer",display:"block"}}
+                    onClick={()=>window.open(photo,"_blank")}/>
+                  {isAdmin&&(
+                    <button onClick={()=>setOrders(prev=>prev.map(o=>o.id!==sel.id?o:{...o,[field]:null}))}
+                      style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,.55)",color:"#fff",
+                        border:"none",borderRadius:6,padding:"3px 8px",cursor:"pointer",fontSize:12,fontWeight:600}}>
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ) : isAdmin ? (
+                <label style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                  height:100,border:`2px dashed ${C.border}`,borderRadius:10,cursor:"pointer",
+                  color:C.sub,fontSize:13,gap:6,transition:"border-color .15s"}}
+                  onMouseEnter={e=>e.currentTarget.style.borderColor=C.accent}
+                  onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
+                  <span style={{fontSize:22}}>{icon}</span>
+                  <span>Upload {label}</span>
+                  <input type="file" accept="image/*,application/pdf" style={{display:"none"}}
+                    onChange={e=>uploadOrderPhoto(e,sel.id,field)}/>
+                </label>
+              ) : (
+                <div style={{height:80,border:`1px solid ${C.border}`,borderRadius:10,
+                  display:"flex",alignItems:"center",justifyContent:"center",color:C.sub,fontSize:13}}>
+                  Not uploaded
+                </div>
+              )}
+            </div>
+          );
+        };
+
         return (
-          <Modal onClose={()=>setModal(null)} width={580}>
+          <Modal onClose={()=>setModal(null)} width={600}>
             {/* Header */}
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6,flexWrap:"wrap",gap:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4,flexWrap:"wrap",gap:8}}>
               <div style={{...T.h2}}>{sel.title}</div>
               <span style={{fontSize:11,fontWeight:600,padding:"4px 12px",borderRadius:99,
                 background:statusBg(sel.status),color:statusColor(sel.status),textTransform:"uppercase",letterSpacing:.6}}>{sel.status}</span>
             </div>
-            {sel.outlet&&<div style={{...T.caption,marginBottom:4}}>🏪 {sel.outlet}</div>}
-            <div style={{...T.caption,marginBottom:sel.note?8:16}}>Created {fmtDate(sel.createdAt)}</div>
+            {sel.outlet&&<div style={{...T.caption,marginBottom:2}}>🏪 {sel.outlet}</div>}
+            <div style={{...T.caption,marginBottom:sel.note?10:16}}>Created {fmtDate(sel.createdAt)}</div>
             {sel.note&&<div style={{fontSize:13,color:C.sub,marginBottom:16,background:C.surface,borderRadius:10,padding:"10px 14px"}}>{sel.note}</div>}
 
             {/* Column labels */}
-            <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:8,padding:"0 4px",marginBottom:8}}>
+            <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:8,padding:"0 2px",marginBottom:8}}>
               <div style={{...T.label}}>Item</div>
               <div style={{...T.label,textAlign:"center"}}>Ordered</div>
               <div style={{...T.label,textAlign:"center"}}>Delivered</div>
@@ -972,7 +1008,7 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
                       </div>
                       <div style={{textAlign:"center"}}>
                         {isAdmin&&!isDelivered ? (
-                          <input type="number" min="0" max={item.qty} value={dQtyVal}
+                          <input type="number" min="0" value={dQtyVal}
                             onChange={e=>setDQty(sel.id,item.id,e.target.value)}
                             placeholder={String(item.qty)}
                             style={{width:"100%",textAlign:"center",background:C.bg,border:`1px solid ${C.border}`,
@@ -981,47 +1017,45 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
                         ):(
                           <div>
                             <span style={{fontWeight:700,fontSize:16,color:isFull?C.success:isShort?C.warning:C.sub}}>
-                              {item.delivered?item.deliveredQty:"—"}
+                              {item.delivered ? item.deliveredQty : "—"}
                             </span>
                             {item.delivered&&<span style={{...T.caption,marginLeft:3}}>{item.unit}</span>}
                           </div>
                         )}
                       </div>
                     </div>
-                    {/* Photo */}
-                    {isAdmin&&item.delivered&&(
-                      <div style={{marginTop:10,display:"flex",alignItems:"center",gap:10}}>
-                        {item.photo
-                          ?<img src={item.photo} alt="" style={{width:40,height:40,borderRadius:6,objectFit:"cover",cursor:"pointer"}} onClick={()=>window.open(item.photo,"_blank")}/>
-                          :<label style={{fontSize:12,color:C.sub,cursor:"pointer",fontFamily:"inherit",
-                            border:`1px dashed ${C.border}`,borderRadius:6,padding:"4px 10px"}}>
-                            📸 Add proof
-                            <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>handleDeliveryPhoto(e,sel.id,item.id)}/>
-                          </label>
-                        }
-                      </div>
-                    )}
                   </div>
                 );
               })}
             </div>
 
+            {/* Photos & Receipt — 1 per order */}
+            {(isDelivered||isAdmin)&&(
+              <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16,marginBottom:20}}>
+                <div style={{...T.h3,marginBottom:14}}>Attachments</div>
+                <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+                  <PhotoSlot field="deliveryPhoto" label="Delivery Photo" icon="📦"/>
+                  <PhotoSlot field="receiptPhoto"  label="Lalamove Receipt" icon="🧾"/>
+                </div>
+              </div>
+            )}
+
             {/* Action buttons */}
             {isAdmin&&(
               <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16,display:"flex",gap:10,flexWrap:"wrap"}}>
-                {!isDelivered?(
-                  <Btn onClick={()=>markAllDelivered(sel.id)} style={{flex:1}}>
-                    ✓ Mark All as Delivered
-                  </Btn>
-                ):(
-                  <Btn onClick={()=>unmarkDelivered(sel.id)} variant="outline" color={C.warning} style={{flex:1}}>
-                    ↩ Reset to Pending
-                  </Btn>
+                {!isDelivered ? (
+                  <Btn onClick={()=>markAllDelivered(sel.id)} style={{flex:2}}>✓ Mark All as Delivered</Btn>
+                ) : (
+                  <Btn onClick={()=>unmarkDelivered(sel.id)} variant="outline" color={C.warning} style={{flex:2}}>↩ Reset to Pending</Btn>
                 )}
                 <Btn onClick={()=>setModal(null)} variant="outline" style={{flex:1}}>Close</Btn>
               </div>
             )}
-            {!isAdmin&&<div style={{textAlign:"right",marginTop:16}}><Btn onClick={()=>setModal(null)} variant="outline">Close</Btn></div>}
+            {!isAdmin&&(
+              <div style={{textAlign:"right"}}>
+                <Btn onClick={()=>setModal(null)} variant="outline">Close</Btn>
+              </div>
+            )}
           </Modal>
         );
       })()}

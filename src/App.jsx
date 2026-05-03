@@ -1,9 +1,42 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ─── Supabase ─────────────────────────────────────────────────────────────────
+const SB_URL = "https://pvdnvfpfvatrzfocuopg.supabase.co";
+const SB_KEY = "sb_publishable_agiL_8c1_FLJkXujdk0Ypg_QD_Jxyso";
+
+const sbFetch = async (path, options={}) => {
+  const res = await fetch(`${SB_URL}/rest/v1${path}`, {
+    ...options,
+    headers: {
+      "apikey": SB_KEY,
+      "Authorization": `Bearer ${SB_KEY}`,
+      "Content-Type": "application/json",
+      "Prefer": options.prefer || "return=representation",
+      ...options.headers,
+    },
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+};
+
+const db = {
+  // STOCK
+  getStock:    ()          => sbFetch("/stock?order=id.asc"),
+  insertStock: (row)       => sbFetch("/stock", {method:"POST", body:JSON.stringify(row)}),
+  updateStock: (id, row)   => sbFetch(`/stock?id=eq.${id}`, {method:"PATCH", body:JSON.stringify(row)}),
+  deleteStock: (id)        => sbFetch(`/stock?id=eq.${id}`, {method:"DELETE", prefer:""}),
+  // ORDERS
+  getOrders:   ()          => sbFetch("/orders?order=created_at.desc"),
+  insertOrder: (row)       => sbFetch("/orders", {method:"POST", body:JSON.stringify(row)}),
+  updateOrder: (id, row)   => sbFetch(`/orders?id=eq.${id}`, {method:"PATCH", body:JSON.stringify(row)}),
+  deleteOrder: (id)        => sbFetch(`/orders?id=eq.${id}`, {method:"DELETE", prefer:""}),
+};
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const STOCK_KEY  = "ck-stock-v3";
-const ORDERS_KEY = "ck-orders-v3";
-const SHEET_KEY  = "ck-sheet-url";
 const ROLE_KEY   = "ck-role";
 
 const ADMIN_PASS  = "samurai2026";
@@ -227,8 +260,17 @@ function LoginScreen({onLogin}) {
 // OUTLET ORDER SUBMIT SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
 function OutletScreen({outlet, onLogout, notify}) {
-  const [orders, setOrders] = useState(()=>{try{return JSON.parse(localStorage.getItem(ORDERS_KEY))||[]}catch{return []}});
-  const [stock]             = useState(()=>{try{return JSON.parse(localStorage.getItem(STOCK_KEY))||DEFAULT_STOCK}catch{return DEFAULT_STOCK}});
+  const [stock, setStock]   = useState(DEFAULT_STOCK);
+
+  useEffect(()=>{
+    db.getStock().then(s=>{
+      if(s&&s.length>0) setStock(s.map(r=>({
+        id:r.id,name:r.name,cat:r.cat,unit:r.unit,
+        qty:parseFloat(r.qty)||0,minQty:parseFloat(r.min_qty)||0,
+        lastUpdate:r.last_update,photo:r.photo
+      })));
+    }).catch(()=>{});
+  },[]);
   const [note, setNote]     = useState("");
   const [submitted, setSubmitted] = useState(false);
 
@@ -257,18 +299,18 @@ function OutletScreen({outlet, onLogout, notify}) {
     setItems(p => p.map(i => i.id === id ? {...i, name, unit:si?.unit||i.unit} : i));
   };
 
-  const submit = () => {
+  const submit = async () => {
     const valid = items.filter(i => i.name.trim() && i.qty);
     if (!valid.length) return notify("Please select at least one item and enter a quantity.", "err");
-    const order = {
-      id:Date.now(), title:`${outlet} — ${new Date().toLocaleDateString("en-GB")}`,
-      outlet, note, source:"outlet", createdAt:today(), status:"Pending",
-      items: valid.map(i => ({...i, id:Date.now()+Math.random(), delivered:false, photo:null}))
-    };
-    const updated = [order, ...orders];
-    setOrders(updated);
-    localStorage.setItem(ORDERS_KEY, JSON.stringify(updated));
-    setSubmitted(true);
+    const orderItems = valid.map(i => ({...i, id:crypto.randomUUID(), delivered:false, deliveredQty:0, photo:null}));
+    try {
+      await db.insertOrder({
+        title:`${outlet} — ${new Date().toLocaleDateString("en-GB")}`,
+        outlet, note, source:"outlet", status:"Pending",
+        items: JSON.stringify(orderItems)
+      });
+      setSubmitted(true);
+    } catch(e) { notify("Failed to submit. Please try again.","err"); }
   };
 
   if (submitted) return (
@@ -385,24 +427,78 @@ function OutletScreen({outlet, onLogout, notify}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 function MainApp({role, onLogout}) {
   const [tab, setTab]       = useState("stock");
-  const [stock, setStock]   = useState(()=>{try{return JSON.parse(localStorage.getItem(STOCK_KEY))||DEFAULT_STOCK}catch{return DEFAULT_STOCK}});
-  const [orders, setOrders] = useState(()=>{try{return JSON.parse(localStorage.getItem(ORDERS_KEY))||[]}catch{return []}});
+  const [stock, setStock]   = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [toast, setToast]   = useState(null);
 
   const isAdmin = role === "admin";
 
-  useEffect(()=>{localStorage.setItem(STOCK_KEY,JSON.stringify(stock))},[stock]);
-  useEffect(()=>{localStorage.setItem(ORDERS_KEY,JSON.stringify(orders))},[orders]);
+  const notify = (msg,type="ok") => {setToast({msg,type});setTimeout(()=>setToast(null),3500)};
 
-  const notify = (msg,type="ok") => {setToast({msg,type});setTimeout(()=>setToast(null),3000)};
+  // Load data from Supabase on mount + poll every 30s
+  const loadData = useCallback(async () => {
+    try {
+      const [s, o] = await Promise.all([db.getStock(), db.getOrders()]);
+      if (s) setStock(s.map(r=>({
+        id:r.id, name:r.name, cat:r.cat, unit:r.unit,
+        qty:parseFloat(r.qty)||0, minQty:parseFloat(r.min_qty)||0,
+        lastUpdate:r.last_update, photo:r.photo
+      })));
+      if (o) setOrders(o.map(r=>({
+        id:r.id, title:r.title, outlet:r.outlet, note:r.note,
+        source:r.source, status:r.status,
+        createdAt:r.created_at?.split("T")[0],
+        completedAt:r.completed_at,
+        deliveryPhoto:r.delivery_photo,
+        receiptPhoto:r.receipt_photo,
+        items: typeof r.items === "string" ? JSON.parse(r.items) : (r.items||[])
+      })));
+    } catch(e) {
+      notify("Connection error. Retrying...","warn");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(()=>{
+    loadData();
+    // Seed default stock if empty
+    const seedStock = async () => {
+      try {
+        const s = await db.getStock();
+        if (s && s.length === 0) {
+          for (const item of DEFAULT_STOCK) {
+            await db.insertStock({
+              name:item.name, cat:item.cat, unit:item.unit,
+              qty:item.qty, min_qty:item.minQty, last_update:item.lastUpdate, photo:null
+            });
+          }
+          loadData();
+        }
+      } catch(e) {}
+    };
+    seedStock();
+    const interval = setInterval(loadData, 30000);
+    return () => clearInterval(interval);
+  }, [loadData]);
 
   const pendingMap = getPendingMap(orders);
 
   const tabs = [
     {k:"stock",  l:"Stock"},
     {k:"orders", l:"Orders"},
-    {k:"setup",  l:"Google Form"},
   ];
+
+  if (loading) return (
+    <div style={{minHeight:"100vh",background:C.surface,display:"flex",alignItems:"center",justifyContent:"center",
+      fontFamily:"'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"}}>
+      <div style={{textAlign:"center"}}>
+        <div style={{fontSize:40,marginBottom:16}}>🥩</div>
+        <div style={{fontSize:16,color:C.sub,fontWeight:500}}>Loading Central Kitchen...</div>
+      </div>
+    </div>
+  );
 
   return (
     <div style={{minHeight:"100vh",background:C.surface,fontFamily:"'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",color:C.text}}>
@@ -445,9 +541,8 @@ function MainApp({role, onLogout}) {
       </div>
 
       <div style={{maxWidth:1100,margin:"0 auto",padding:"28px 24px"}}>
-        {tab==="stock"  && <StockTab  stock={stock} setStock={setStock} orders={orders} pendingMap={pendingMap} notify={notify} isAdmin={isAdmin}/>}
-        {tab==="orders" && <OrdersTab orders={orders} setOrders={setOrders} notify={notify} isAdmin={isAdmin}/>}
-        {tab==="setup"  && <SetupTab  orders={orders} setOrders={setOrders} notify={notify} isAdmin={isAdmin}/>}
+        {tab==="stock"  && <StockTab  stock={stock} setStock={setStock} orders={orders} pendingMap={pendingMap} notify={notify} isAdmin={isAdmin} reload={loadData}/>}
+        {tab==="orders" && <OrdersTab orders={orders} setOrders={setOrders} notify={notify} isAdmin={isAdmin} reload={loadData}/>}
       </div>
     </div>
   );
@@ -456,7 +551,7 @@ function MainApp({role, onLogout}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // STOCK TAB
 // ═══════════════════════════════════════════════════════════════════════════════
-function StockTab({stock, setStock, orders, pendingMap, notify, isAdmin}) {
+function StockTab({stock, setStock, orders, pendingMap, notify, isAdmin, reload}) {
   const [cat,    setCat]   = useState("All");
   const [search, setSearch]= useState("");
   const [modal,  setModal] = useState(null);
@@ -489,33 +584,40 @@ function StockTab({stock, setStock, orders, pendingMap, notify, isAdmin}) {
   const openAdd    = ()   => { setForm({name:"",cat:"Wagyu",unit:"pack",qty:0,minQty:0});setModal("add"); };
   const handlePhoto= e   => { const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>setAdjPhoto(ev.target.result);r.readAsDataURL(f); };
 
-  const saveAdjust = () => {
+  const saveAdjust = async () => {
     const n = parseFloat(adjQty);
     if (!n||n<=0) return notify("Please enter a valid quantity.","err");
-    setStock(prev=>prev.map(i=>i.id!==sel.id?i:{
-      ...i, qty:adjType==="in"?i.qty+n:Math.max(0,i.qty-n),
-      lastUpdate:today(), photo:adjPhoto||i.photo
-    }));
-    notify(adjType==="in"?`+${n} ${sel.unit} added to stock.`:`-${n} ${sel.unit} removed from stock.`);
-    setModal(null);
+    const newQty = adjType==="in" ? sel.qty+n : Math.max(0,sel.qty-n);
+    try {
+      await db.updateStock(sel.id, {qty:newQty, last_update:today(), photo:adjPhoto||sel.photo||null});
+      await reload();
+      notify(adjType==="in"?`+${n} ${sel.unit} added to stock.`:`-${n} ${sel.unit} removed from stock.`);
+      setModal(null);
+    } catch(e) { notify("Failed to update. Try again.","err"); }
   };
 
-  const saveItem = () => {
+  const saveItem = async () => {
     if (!form.name?.trim()) return notify("Item name is required.","err");
-    if (modal==="add") {
-      setStock(prev=>[...prev,{...form,id:Date.now(),qty:+form.qty||0,minQty:+form.minQty||0,lastUpdate:today(),photo:null}]);
-      notify("Item added.");
-    } else {
-      setStock(prev=>prev.map(i=>i.id===sel.id?{...form,id:sel.id,qty:+form.qty||0,minQty:+form.minQty||0,lastUpdate:today(),photo:sel.photo}:i));
-      notify("Item updated.");
-    }
-    setModal(null);
+    try {
+      if (modal==="add") {
+        await db.insertStock({name:form.name,cat:form.cat,unit:form.unit,qty:+form.qty||0,min_qty:+form.minQty||0,last_update:today(),photo:null});
+        notify("Item added.");
+      } else {
+        await db.updateStock(sel.id, {name:form.name,cat:form.cat,unit:form.unit,qty:+form.qty||0,min_qty:+form.minQty||0,last_update:today()});
+        notify("Item updated.");
+      }
+      await reload();
+      setModal(null);
+    } catch(e) { notify("Failed to save. Try again.","err"); }
   };
 
-  const deleteItem = id => {
+  const deleteItem = async id => {
     if (!confirm("Delete this item?")) return;
-    setStock(prev=>prev.filter(i=>i.id!==id));
-    notify("Item deleted.","warn");
+    try {
+      await db.deleteStock(id);
+      await reload();
+      notify("Item deleted.","warn");
+    } catch(e) { notify("Failed to delete.","err"); }
   };
 
   return (
@@ -696,7 +798,7 @@ function StockTab({stock, setStock, orders, pendingMap, notify, isAdmin}) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // ORDERS TAB
 // ═══════════════════════════════════════════════════════════════════════════════
-function OrdersTab({orders, setOrders, notify, isAdmin}) {
+function OrdersTab({orders, setOrders, notify, isAdmin, reload}) {
   const [filter,     setFilter]    = useState("All");
   const [timeFilter, setTimeFilter]= useState("All Time");
   const [modal,      setModal]     = useState(null);
@@ -733,17 +835,18 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
     (filter !== "Completed" || isInPeriod(o.createdAt, timeFilter))
   );
 
-  const createOrder = () => {
+  const createOrder = async () => {
     if (!newOrder.title.trim()) return notify("Order title is required.", "err");
     if (!newOrder.items.length) return notify("Add at least one item.", "err");
-    setOrders(prev=>[{
-      id:Date.now(), title:newOrder.title, outlet:newOrder.outlet, note:newOrder.note,
-      source:"manual", createdAt:today(), status:"Pending",
-      items:newOrder.items.map(i=>({...i,id:Date.now()+Math.random(),delivered:false,deliveredQty:0,photo:null}))
-    },...prev]);
-    notify("Order created.");
-    setModal(null);
-    setNewOrder({title:"",outlet:OUTLETS[0],note:"",items:[]});
+    const items = newOrder.items.map(i=>({...i,id:crypto.randomUUID(),delivered:false,deliveredQty:0,photo:null}));
+    try {
+      await db.insertOrder({title:newOrder.title,outlet:newOrder.outlet,note:newOrder.note,
+        source:"manual",status:"Pending",items:JSON.stringify(items)});
+      await reload();
+      notify("Order created.");
+      setModal(null);
+      setNewOrder({title:"",outlet:OUTLETS[0],note:"",items:[]});
+    } catch(e) { notify("Failed to create order.","err"); }
   };
 
   const addItem = () => {
@@ -752,35 +855,43 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
     setNewItem({name:"",cat:"Wagyu",unit:"pack",qty:""});
   };
 
-  // Mark all items delivered with their keyed quantities
-  const markAllDelivered = (orderId) => {
-    setOrders(prev=>prev.map(o=>{
-      if (o.id !== orderId) return o;
-      const items = o.items.map(i => {
-        const dQty = parseFloat(deliveredQtys[`${orderId}-${i.id}`] ?? i.qty) || 0;
-        return {...i, delivered:true, deliveredQty:dQty, photo:i.photo||null};
-      });
-      const allFull  = items.every(i => i.deliveredQty >= i.qty);
-      return {...o, items, status: allFull ? "Completed" : "Partial", completedAt: today()};
-    }));
-    notify("Order marked as delivered.");
+  const markAllDelivered = async (orderId) => {
+    const order = orders.find(o=>o.id===orderId);
+    if (!order) return;
+    const items = order.items.map(i => {
+      const dQty = parseFloat(deliveredQtys[`${orderId}-${i.id}`] ?? i.qty) || 0;
+      return {...i, delivered:true, deliveredQty:dQty};
+    });
+    const allFull = items.every(i => i.deliveredQty >= parseFloat(i.qty));
+    const status  = allFull ? "Completed" : "Partial";
+    try {
+      await db.updateOrder(orderId, {items:JSON.stringify(items), status, completed_at:new Date().toISOString()});
+      await reload();
+      notify("Order marked as delivered.");
+    } catch(e) { notify("Failed to update.","err"); }
   };
 
-  const unmarkDelivered = (orderId) => {
-    setOrders(prev=>prev.map(o=>{
-      if (o.id !== orderId) return o;
-      const items = o.items.map(i => ({...i, delivered:false, deliveredQty:0}));
-      return {...o, items, status:"Pending", completedAt:null};
-    }));
-    notify("Order reset to Pending.", "warn");
+  const unmarkDelivered = async (orderId) => {
+    const order = orders.find(o=>o.id===orderId);
+    if (!order) return;
+    const items = order.items.map(i=>({...i,delivered:false,deliveredQty:0}));
+    try {
+      await db.updateOrder(orderId, {items:JSON.stringify(items), status:"Pending", completed_at:null});
+      await reload();
+      notify("Order reset to Pending.","warn");
+    } catch(e) { notify("Failed to update.","err"); }
   };
 
   const uploadOrderPhoto = (e, orderId, field) => {
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
-    r.onload = ev => {
-      setOrders(prev=>prev.map(o=>o.id!==orderId?o:{...o,[field]:ev.target.result}));
-      notify(field==="deliveryPhoto"?"Delivery photo saved.":"Receipt saved.");
+    r.onload = async ev => {
+      const dbField = field==="deliveryPhoto"?"delivery_photo":"receipt_photo";
+      try {
+        await db.updateOrder(orderId, {[dbField]:ev.target.result});
+        await reload();
+        notify(field==="deliveryPhoto"?"Delivery photo saved.":"Receipt saved.");
+      } catch(e) { notify("Failed to save photo.","err"); }
     };
     r.readAsDataURL(f);
   };
@@ -868,7 +979,7 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
                 <div style={{display:"flex",gap:8}}>
                   <button onClick={()=>{setSel(order);setModal("view")}} style={{padding:"8px 14px",background:C.surface,
                     color:C.accent,border:"none",borderRadius:9,fontSize:13,fontWeight:600,cursor:"pointer"}}>View</button>
-                  {isAdmin&&<button onClick={()=>{if(!confirm("Delete this order?"))return;setOrders(prev=>prev.filter(o=>o.id!==order.id));notify("Order deleted.","warn")}}
+                  {isAdmin&&<button onClick={async()=>{if(!confirm("Delete this order?"))return;try{await db.deleteOrder(order.id);await reload();notify("Order deleted.","warn")}catch(e){notify("Failed.","err")}}}
                     style={{padding:"8px 10px",background:"none",color:C.danger,border:"none",borderRadius:9,cursor:"pointer",fontSize:14}}>🗑</button>}
                 </div>
               </div>
@@ -933,7 +1044,7 @@ function OrdersTab({orders, setOrders, notify, isAdmin}) {
                     style={{width:"100%",height:120,objectFit:"cover",borderRadius:10,cursor:"pointer",display:"block"}}
                     onClick={()=>window.open(photo,"_blank")}/>
                   {isAdmin&&(
-                    <button onClick={()=>setOrders(prev=>prev.map(o=>o.id!==sel.id?o:{...o,[field]:null}))}
+                    <button onClick={async()=>{const dbf=field==="deliveryPhoto"?"delivery_photo":"receipt_photo";await db.updateOrder(sel.id,{[dbf]:null});await reload();}}
                       style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,.55)",color:"#fff",
                         border:"none",borderRadius:6,padding:"3px 8px",cursor:"pointer",fontSize:12,fontWeight:600}}>
                       Remove
